@@ -11,7 +11,7 @@ func TestFTPS(t *testing.T) {
 	ftps := new(FTPS)
 
 	ftps.TLSConfig.InsecureSkipVerify = true
-	ftps.Debug = false
+	ftps.Debug = true
 
 	err := ftps.Connect("localhost", 21)
 	if err != nil {
@@ -72,6 +72,11 @@ func TestFTPS(t *testing.T) {
 		panic(err)
 	}
 	err = ftps.StoreFile("test.go", data)
+	if err != nil {
+		panic(err)
+	}
+
+	err = ftps.RetrieveFile("test.go", "copy.go")
 	if err != nil {
 		panic(err)
 	}

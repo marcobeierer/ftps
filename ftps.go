@@ -20,6 +20,7 @@ import (
 	"log"
 	"net"
 	"net/textproto"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -45,8 +46,9 @@ func (ftps *FTPS) Connect(host string, port int) (err error) {
 
 	ftps.text = textproto.NewConn(ftps.conn)
 
-	_, message, err := ftps.text.ReadResponse(220)
-	ftps.debugInfo(message)
+	//_, message, err := ftps.text.ReadResponse(220)
+	//ftps.debugInfo(message)
+	_, err = ftps.response(220)
 	if err != nil {
 		return err
 	}
@@ -112,10 +114,7 @@ func (ftps *FTPS) request(cmd string, expected int) (message string, err error) 
 		return
 	}
 
-	code, message, err := ftps.text.ReadResponse(expected)
-
-	ftps.debugInfo(fmt.Sprintf("<*code*> %d", code))
-	ftps.debugInfo("<*message*> " + message)
+	message, err = ftps.response(expected)
 
 	return
 }
@@ -139,6 +138,18 @@ func (ftps *FTPS) requestDataConn(cmd string, expected int) (dataConn net.Conn, 
 	}
 
 	dataConn = ftps.upgradeConnToTLS(dataConn)
+
+	return
+}
+
+func (ftps *FTPS) response(expected int) (message string, err error) {
+
+	ftps.isConnEstablished()
+
+	code, message, err := ftps.text.ReadResponse(expected)
+
+	ftps.debugInfo(fmt.Sprintf("<*code*> %d", code))
+	ftps.debugInfo("<*message*> " + message)
 
 	return
 }
@@ -239,20 +250,52 @@ func (ftps *FTPS) List() (err error) { // TODO return entries slice and error
 	return
 }
 
-func (ftps *FTPS) StoreFile(filename string, data []byte) (err error) {
+func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 
-	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", filename), 150)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", remoteFilepath), 150)
 	if err != nil {
 		return
 	}
 	defer dataConn.Close()
 
-	_, err = dataConn.Write(data)
+	count, err := dataConn.Write(data)
+	if err != nil {
+		return
+	}
+	dataConn.Close()
+
+	if len(data) != count {
+		return errors.New("File transfer not complete.")
+	}
+
+	_, err = ftps.response(226)
 	if err != nil {
 		return
 	}
 
-	err = dataConn.Close()
+	return
+}
+
+func (ftps *FTPS) RetrieveFile(remoteFilepath, localFilepath string) (err error) {
+
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 150)
+	if err != nil {
+		return
+	}
+	defer dataConn.Close()
+
+	file, err := os.Open(localFilepath)
+	if err != nil {
+		return
+	}
+
+	_, err = io.Copy(file, dataConn)
+	if err != nil {
+		return
+	}
+	dataConn.Close()
+
+	_, err = ftps.response(226)
 	if err != nil {
 		return
 	}
