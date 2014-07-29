@@ -219,11 +219,15 @@ func (ftps *FTPS) RemoveDirectory(path string) (err error) {
 	return
 }
 
-func (ftps *FTPS) List() {
+func (ftps *FTPS) List() (err error) { // TODO return entries slice and error
 
-	dataConn, _ := ftps.requestDataConn("LIST", 150)
+	dataConn, err := ftps.requestDataConn("LIST", 150)
+	if err != nil {
+		return
+	}
+	defer dataConn.Close()
+
 	reader := bufio.NewReader(dataConn)
-
 	for {
 		line, err := reader.ReadString('\n')
 		if err == io.EOF {
@@ -232,21 +236,36 @@ func (ftps *FTPS) List() {
 		fmt.Print(line)
 	}
 
-	dataConn.Close() // TODO necessary?
+	return
 }
 
-func (ftps *FTPS) Stor(file string, data []byte) {
+func (ftps *FTPS) StoreFile(filename string, data []byte) (err error) {
 
-	// TODO PAsv
-	//if data != nil {
-	//ftps.stream = data // TODO
-	//}
-	//ftps.request("STOR " + file)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", filename), 150)
+	if err != nil {
+		return
+	}
+	defer dataConn.Close()
+
+	_, err = dataConn.Write(data)
+	if err != nil {
+		return
+	}
+
+	err = dataConn.Close()
+	if err != nil {
+		return
+	}
+
+	return
 }
 
 func (ftps *FTPS) Quit() (err error) {
 
 	_, err = ftps.request("QUIT", 221)
+	if err != nil {
+		return
+	}
 	ftps.conn.Close()
 
 	return
@@ -254,9 +273,7 @@ func (ftps *FTPS) Quit() (err error) {
 
 func (ftps *FTPS) openDataConn(port int) (dataConn net.Conn, err error) {
 
-	address := fmt.Sprintf("%s:%d", ftps.host, port)
-
-	dataConn, err = net.Dial("tcp", address)
+	dataConn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", ftps.host, port))
 	if err != nil {
 		return
 	}

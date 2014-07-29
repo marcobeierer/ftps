@@ -1,6 +1,7 @@
 package ftps
 
 import (
+	"io/ioutil"
 	"log"
 	"testing"
 )
@@ -65,6 +66,15 @@ func TestFTPS(t *testing.T) {
 		panic(err)
 	}
 	log.Printf("Current working directory: %s", directory)
+
+	data, err := ioutil.ReadFile("ftps.go")
+	if err != nil {
+		panic(err)
+	}
+	err = ftps.StoreFile("test.go", data)
+	if err != nil {
+		panic(err)
+	}
 
 	// TODO test deleteFile
 
