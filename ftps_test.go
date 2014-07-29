@@ -81,9 +81,18 @@ func TestFTPS(t *testing.T) {
 		panic(err)
 	}
 
-	// TODO test deleteFile
+	err = ftps.DeleteFile("test.go")
+	if err != nil {
+		panic(err)
+	}
 
-	//ftps.List() // TODO error handlin
+	entries, err := ftps.List()
+	if err != nil {
+		panic(err)
+	}
+	for _, entry := range entries {
+		log.Println(entry)
+	}
 
 	err = ftps.Quit()
 	if err != nil {

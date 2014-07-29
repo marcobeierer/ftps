@@ -23,6 +23,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type FTPS struct {
@@ -230,7 +231,9 @@ func (ftps *FTPS) RemoveDirectory(path string) (err error) {
 	return
 }
 
-func (ftps *FTPS) List() (err error) { // TODO return entries slice and error
+func (ftps *FTPS) List() (entries []Entry, err error) { // TODO return entries slice and error
+
+	// TODO add support for MLSD
 
 	dataConn, err := ftps.requestDataConn("LIST", 150)
 	if err != nil {
@@ -244,8 +247,66 @@ func (ftps *FTPS) List() (err error) { // TODO return entries slice and error
 		if err == io.EOF {
 			break
 		}
-		fmt.Print(line)
+
+		entry, err := ftps.parseEntryLine(line)
+		entries = append(entries, *entry)
 	}
+	dataConn.Close()
+
+	_, err = ftps.response(226)
+	if err != nil {
+		return
+	}
+
+	return
+}
+
+func (ftps *FTPS) parseEntryLine(line string) (entry *Entry, err error) {
+
+	// TODO Function mostly taken from https://github.com/jlaffaye/ftp
+
+	fields := strings.Fields(line)
+	if len(fields) < 9 {
+		return nil, errors.New("Unsupported line format.")
+	}
+
+	entry = &Entry{}
+
+	// parse type
+	switch fields[0][0] {
+	case '-':
+		entry.Type = EntryTypeFile
+	case 'd':
+		entry.Type = EntryTypeFolder
+	case 'l':
+		entry.Type = EntryTypeLink
+	default:
+		return nil, errors.New("Unknown entry type.")
+	}
+
+	// parse size
+	size, err := strconv.ParseUint(fields[4], 10, 0)
+	if err != nil {
+		return nil, err
+	}
+	entry.Size = size
+
+	// parse time
+	var timeStr string
+	if strings.Contains(fields[7], ":") { // this year
+		thisYear, _, _ := time.Now().Date()
+		timeStr = fields[6] + " " + fields[5] + " " + strconv.Itoa(thisYear)[2:4] + " " + fields[7] + " GMT"
+	} else { // not this year
+		timeStr = fields[6] + " " + fields[5] + " " + fields[7][2:4] + " " + "00:00" + " GMT"
+	}
+	t, err := time.Parse("_2 Jan 06 15:04 MST", timeStr)
+	if err != nil {
+		return nil, err
+	}
+	entry.Time = t // TODO set timezone
+
+	// parse name
+	entry.Name = strings.Join(fields[8:], " ")
 
 	return
 }
@@ -284,7 +345,7 @@ func (ftps *FTPS) RetrieveFile(remoteFilepath, localFilepath string) (err error)
 	}
 	defer dataConn.Close()
 
-	file, err := os.Open(localFilepath)
+	file, err := os.Create(localFilepath)
 	if err != nil {
 		return
 	}
