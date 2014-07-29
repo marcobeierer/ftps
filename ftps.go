@@ -7,6 +7,8 @@
 
 // TODO change command names (z.B. Cwd to ChangeWorkingDirectory)
 
+// TODO remove debug stuff
+
 package ftps
 
 import (
@@ -187,9 +189,9 @@ func (ftps *FTPS) pasv() (port int, err error) {
 	return
 }
 
-func (ftps *FTPS) PrintWorkingDirectory() (err error) {
+func (ftps *FTPS) PrintWorkingDirectory() (directory string, err error) {
 
-	_, err = ftps.request("PWD", 257)
+	directory, err = ftps.request("PWD", 257)
 	return
 }
 
@@ -202,6 +204,18 @@ func (ftps *FTPS) ChangeWorkingDirectory(path string) (err error) {
 func (ftps *FTPS) MakeDirectory(path string) (err error) {
 
 	_, err = ftps.request(fmt.Sprintf("MKD %s", path), 257)
+	return
+}
+
+func (ftps *FTPS) DeleteFile(path string) (err error) {
+
+	_, err = ftps.request(fmt.Sprintf("DELE %s", path), 250)
+	return
+}
+
+func (ftps *FTPS) RemoveDirectory(path string) (err error) {
+
+	_, err = ftps.request(fmt.Sprintf("RMD %s", path), 250)
 	return
 }
 
