@@ -231,11 +231,11 @@ func (ftps *FTPS) RemoveDirectory(path string) (err error) {
 	return
 }
 
-func (ftps *FTPS) List() (entries []Entry, err error) { // TODO return entries slice and error
+func (ftps *FTPS) List() (entries []Entry, err error) {
 
 	// TODO add support for MLSD
 
-	dataConn, err := ftps.requestDataConn("LIST", 150)
+	dataConn, err := ftps.requestDataConn("LIST -a", 150) // TODO use also -L to resolve links?
 	if err != nil {
 		return
 	}
@@ -295,9 +295,9 @@ func (ftps *FTPS) parseEntryLine(line string) (entry *Entry, err error) {
 	var timeStr string
 	if strings.Contains(fields[7], ":") { // this year
 		thisYear, _, _ := time.Now().Date()
-		timeStr = fields[6] + " " + fields[5] + " " + strconv.Itoa(thisYear)[2:4] + " " + fields[7] + " GMT"
+		timeStr = fmt.Sprintf("%s %s %s %s GMT", fields[6], fields[5], strconv.Itoa(thisYear)[2:4], fields[7])
 	} else { // not this year
-		timeStr = fields[6] + " " + fields[5] + " " + fields[7][2:4] + " " + "00:00" + " GMT"
+		timeStr = fmt.Sprintf("%s %s %s 00:00 GMT", fields[6], fields[5], fields[7][2:4])
 	}
 	t, err := time.Parse("_2 Jan 06 15:04 MST", timeStr)
 	if err != nil {
