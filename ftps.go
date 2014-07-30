@@ -1,14 +1,3 @@
-// http://stackoverflow.com/questions/13110713/upgrade-a-connection-to-tls-in-go
-// https://github.com/jlaffaye/ftp/blob/master/ftp.go
-
-// TODO redefine error handling
-// TODO handle error if certificate could not be verified
-// TODO test, ob wirklich verschluesselt
-
-// TODO change command names (z.B. Cwd to ChangeWorkingDirectory)
-
-// TODO remove debug stuff
-
 package ftps
 
 import (
@@ -47,8 +36,6 @@ func (ftps *FTPS) Connect(host string, port int) (err error) {
 
 	ftps.text = textproto.NewConn(ftps.conn)
 
-	//_, message, err := ftps.text.ReadResponse(220)
-	//ftps.debugInfo(message)
 	_, err = ftps.response(220)
 	if err != nil {
 		return err
@@ -263,7 +250,7 @@ func (ftps *FTPS) List() (entries []Entry, err error) {
 
 func (ftps *FTPS) parseEntryLine(line string) (entry *Entry, err error) {
 
-	// TODO Function mostly taken from https://github.com/jlaffaye/ftp
+	// TODO Function mostly copied from https://github.com/jlaffaye/ftp
 
 	fields := strings.Fields(line)
 	if len(fields) < 9 {
