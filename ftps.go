@@ -336,6 +336,7 @@ func (ftps *FTPS) RetrieveFile(remoteFilepath, localFilepath string) (err error)
 	if err != nil {
 		return
 	}
+	defer file.Close()
 
 	_, err = io.Copy(file, dataConn)
 	if err != nil {
