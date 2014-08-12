@@ -313,7 +313,7 @@ func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 	dataConn.Close()
 
 	if len(data) != count {
-		return errors.New("File transfer not complete.")
+		return errors.New("file transfer not complete")
 	}
 
 	_, err = ftps.response(226)
