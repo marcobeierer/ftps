@@ -236,6 +236,9 @@ func (ftps *FTPS) List() (entries []Entry, err error) {
 		}
 
 		entry, err := ftps.parseEntryLine(line)
+		if err != nil {
+			return nil, err
+		}
 		entries = append(entries, *entry)
 	}
 	dataConn.Close()
