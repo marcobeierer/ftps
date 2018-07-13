@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"bytes"
 )
 
 type FTPS struct {
@@ -318,6 +319,28 @@ func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 	if len(data) != count {
 		return errors.New("file transfer not complete")
 	}
+
+	_, err = ftps.response(226)
+	if err != nil {
+		return
+	}
+
+	return
+}
+
+func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err error) {
+
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 150)
+	if err != nil {
+		return
+	}
+	defer dataConn.Close()
+
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(dataConn)
+	data = buf.Bytes()
+
+	dataConn.Close()
 
 	_, err = ftps.response(226)
 	if err != nil {
