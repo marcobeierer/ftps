@@ -2,6 +2,7 @@ package ftps
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -13,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"bytes"
 )
 
 type FTPS struct {
@@ -337,10 +337,18 @@ func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err erro
 	defer dataConn.Close()
 
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(dataConn)
+
+	_, err = buf.ReadFrom(dataConn)
+	if err != nil {
+		return
+	}
+
 	data = buf.Bytes()
 
-	dataConn.Close()
+	err = dataConn.Close()
+	if err != nil {
+		return
+	}
 
 	_, err = ftps.response(226)
 	if err != nil {
