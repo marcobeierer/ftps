@@ -223,7 +223,7 @@ func (ftps *FTPS) List() (entries []Entry, err error) {
 
 	// TODO add support for MLSD
 
-	dataConn, err := ftps.requestDataConn("LIST -a", 150) // TODO use also -L to resolve links?
+	dataConn, err := ftps.requestDataConn("LIST -a", 1) // TODO use also -L to resolve links?
 	if err != nil {
 		return
 	}
@@ -304,7 +304,7 @@ func (ftps *FTPS) parseEntryLine(line string) (entry *Entry, err error) {
 
 func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 
-	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", remoteFilepath), 150)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", remoteFilepath), 1)
 	if err != nil {
 		return
 	}
@@ -330,7 +330,7 @@ func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 
 func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err error) {
 
-	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 150)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 1)
 	if err != nil {
 		return
 	}
@@ -360,7 +360,7 @@ func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err erro
 
 func (ftps *FTPS) RetrieveFile(remoteFilepath, localFilepath string) (err error) {
 
-	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 150)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 1)
 	if err != nil {
 		return
 	}
