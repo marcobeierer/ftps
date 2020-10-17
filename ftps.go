@@ -26,7 +26,17 @@ type FTPS struct {
 	TLSConfig tls.Config
 }
 
-func (ftps *FTPS) Connect(host string, port int) (err error) {
+func (ftps *FTPS) Connect(host string, port int) error {
+	return ftps.connect(host, port, false)
+}
+
+// ConnectImplicit connects to an implicit FTPS server where TLS is active
+// immediately after the TCP connection is established.
+func (ftps *FTPS) ConnectImplicit(host string, port int) error {
+	return ftps.connect(host, port, true)
+}
+
+func (ftps *FTPS) connect(host string, port int, implicit bool) (err error) {
 
 	ftps.host = host
 
@@ -35,28 +45,34 @@ func (ftps *FTPS) Connect(host string, port int) (err error) {
 		return err
 	}
 
+	if implicit {
+		ftps.conn, err = ftps.upgradeConnToTLS(ftps.conn)
+		if err != nil {
+			ftps.conn = nil
+			return err
+		}
+	}
+
 	ftps.text = textproto.NewConn(ftps.conn)
-
-	_, err = ftps.response(220)
-	if err != nil {
-		ftps.conn.Close()
+	if _, err = ftps.response(220); err != nil {
+		_ = ftps.conn.Close()
 		ftps.conn = nil
 		return err
 	}
 
-	_, err = ftps.request("AUTH TLS", 234)
-	if err != nil {
-		ftps.conn.Close()
-		ftps.conn = nil
-		return err
+	if !implicit {
+		if _, err = ftps.request("AUTH TLS", 234); err != nil {
+			_ = ftps.conn.Close()
+			ftps.conn = nil
+			return err
+		}
+		ftps.conn, err = ftps.upgradeConnToTLS(ftps.conn)
+		if err != nil {
+			ftps.conn = nil
+			return err
+		}
+		ftps.text = textproto.NewConn(ftps.conn) // TODO use sync or something similar?
 	}
-
-	ftps.conn, err = ftps.upgradeConnToTLS(ftps.conn)
-	if err != nil {
-		ftps.conn = nil
-		return err
-	}
-	ftps.text = textproto.NewConn(ftps.conn) // TODO use sync or something similar?
 
 	return
 }
