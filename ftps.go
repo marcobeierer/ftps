@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+// Dialer establishes network connections for an FTPS client.
+type Dialer interface {
+	Dial(network, address string) (net.Conn, error)
+}
+
 type FTPS struct {
 	host string
 
@@ -24,13 +29,13 @@ type FTPS struct {
 
 	Debug     bool
 	TLSConfig tls.Config
+	Dialer    Dialer
 }
 
 func (ftps *FTPS) Connect(host string, port int) (err error) {
-
 	ftps.host = host
 
-	ftps.conn, err = net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	ftps.conn, err = ftps.dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return err
 	}
@@ -424,12 +429,19 @@ func (ftps *FTPS) Quit() (err error) {
 
 func (ftps *FTPS) openDataConn(port int) (dataConn net.Conn, err error) {
 
-	dataConn, err = net.Dial("tcp", net.JoinHostPort(ftps.host, strconv.Itoa(port)))
+	dataConn, err = ftps.dial("tcp", net.JoinHostPort(ftps.host, strconv.Itoa(port)))
 	if err != nil {
 		return
 	}
 
 	return
+}
+
+func (ftps *FTPS) dial(network, address string) (net.Conn, error) {
+	if ftps.Dialer != nil {
+		return ftps.Dialer.Dial(network, address)
+	}
+	return net.Dial(network, address)
 }
 
 func (ftps *FTPS) debugInfo(message string) {
