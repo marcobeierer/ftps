@@ -39,15 +39,23 @@ func (ftps *FTPS) Connect(host string, port int) (err error) {
 
 	_, err = ftps.response(220)
 	if err != nil {
+		ftps.conn.Close()
+		ftps.conn = nil
 		return err
 	}
 
 	_, err = ftps.request("AUTH TLS", 234)
 	if err != nil {
+		ftps.conn.Close()
+		ftps.conn = nil
 		return err
 	}
 
-	ftps.conn = ftps.upgradeConnToTLS(ftps.conn)
+	ftps.conn, err = ftps.upgradeConnToTLS(ftps.conn)
+	if err != nil {
+		ftps.conn = nil
+		return err
+	}
 	ftps.text = textproto.NewConn(ftps.conn) // TODO use sync or something similar?
 
 	return
@@ -126,7 +134,10 @@ func (ftps *FTPS) requestDataConn(cmd string, expected int) (dataConn net.Conn, 
 		return nil, err
 	}
 
-	dataConn = ftps.upgradeConnToTLS(dataConn)
+	dataConn, err = ftps.upgradeConnToTLS(dataConn)
+	if err != nil {
+		return nil, err
+	}
 
 	return
 }
@@ -143,17 +154,14 @@ func (ftps *FTPS) response(expected int) (message string, err error) {
 	return
 }
 
-func (ftps *FTPS) upgradeConnToTLS(conn net.Conn) (upgradedConn net.Conn) {
+func (ftps *FTPS) upgradeConnToTLS(conn net.Conn) (net.Conn, error) {
 
-	var tlsConn *tls.Conn
-	tlsConn = tls.Client(conn, &ftps.TLSConfig)
-
-	tlsConn.Handshake()
-	upgradedConn = net.Conn(tlsConn)
-
-	// TODO verify that TLS connection is established
-
-	return
+	tlsConn := tls.Client(conn, &ftps.TLSConfig)
+	if err := tlsConn.Handshake(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return tlsConn, nil
 }
 
 func (ftps *FTPS) pasv() (port int, err error) {
@@ -172,15 +180,20 @@ func (ftps *FTPS) pasv() (port int, err error) {
 	}
 
 	pasvData := strings.Split(message[start+1:end], ",")
+	if len(pasvData) != 6 {
+		return 0, errors.New("invalid PASV response format")
+	}
 
 	portPart1, err := strconv.Atoi(pasvData[4])
 	if err != nil {
 		return 0, err
 	}
-
 	portPart2, err := strconv.Atoi(pasvData[5])
 	if err != nil {
 		return 0, err
+	}
+	if portPart1 < 0 || portPart1 > 255 || portPart2 < 0 || portPart2 > 255 {
+		return 0, errors.New("invalid PASV port")
 	}
 
 	// Recompose port
@@ -231,16 +244,20 @@ func (ftps *FTPS) List() (entries []Entry, err error) {
 
 	reader := bufio.NewReader(dataConn)
 	for {
-		line, err := reader.ReadString('\n')
-		if err == io.EOF {
+		line, readErr := reader.ReadString('\n')
+		if len(line) > 0 {
+			entry, err := ftps.parseEntryLine(line)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, *entry)
+		}
+		if readErr == io.EOF {
 			break
 		}
-
-		entry, err := ftps.parseEntryLine(line)
-		if err != nil {
-			return nil, err
+		if readErr != nil {
+			return nil, readErr
 		}
-		entries = append(entries, *entry)
 	}
 	dataConn.Close()
 
@@ -286,11 +303,11 @@ func (ftps *FTPS) parseEntryLine(line string) (entry *Entry, err error) {
 	var timeStr string
 	if strings.Contains(fields[7], ":") { // this year
 		thisYear, _, _ := time.Now().Date()
-		timeStr = fmt.Sprintf("%s %s %s %s GMT", fields[6], fields[5], strconv.Itoa(thisYear)[2:4], fields[7])
+		timeStr = fmt.Sprintf("%s %s %d %s GMT", fields[6], fields[5], thisYear, fields[7])
 	} else { // not this year
-		timeStr = fmt.Sprintf("%s %s %s 00:00 GMT", fields[6], fields[5], fields[7][2:4])
+		timeStr = fmt.Sprintf("%s %s %s 00:00 GMT", fields[6], fields[5], fields[7])
 	}
-	t, err := time.Parse("_2 Jan 06 15:04 MST", timeStr)
+	t, err := time.Parse("_2 Jan 2006 15:04 MST", timeStr)
 	if err != nil {
 		return nil, err
 	}
