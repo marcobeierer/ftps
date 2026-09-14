@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/textproto"
 	"os"
@@ -182,6 +183,104 @@ func TestListIncludesFinalLineWithoutNewline(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Name != "final.txt" {
 		t.Fatalf("List entries = %#v, want final.txt", entries)
+	}
+}
+
+func TestStoreFilePreliminaryResponse(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		code    int
+		wantErr bool
+	}{
+		{"data connection open", 125, false},
+		{"restart marker", 110, true},
+		{"service not ready", 120, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatalf("listen: %v", err)
+			}
+			defer listener.Close()
+
+			clientControl, serverControl := net.Pipe()
+			defer clientControl.Close()
+			defer serverControl.Close()
+
+			certificate := newTestCertificate(t)
+			serverErr := make(chan error, 1)
+			go func() {
+				reader := bufio.NewReader(serverControl)
+				if line, err := reader.ReadString('\n'); err != nil || line != "PASV\r\n" {
+					serverErr <- fmt.Errorf("read PASV = %q, %v", line, err)
+					return
+				}
+
+				port := listener.Addr().(*net.TCPAddr).Port
+				if _, err := fmt.Fprintf(serverControl, "227 Entering Passive Mode (127,0,0,1,%d,%d)\r\n", port/256, port%256); err != nil {
+					serverErr <- err
+					return
+				}
+				dataConn, err := listener.Accept()
+				if err != nil {
+					serverErr <- err
+					return
+				}
+
+				if line, err := reader.ReadString('\n'); err != nil || line != "STOR test.txt\r\n" {
+					_ = dataConn.Close()
+					serverErr <- fmt.Errorf("read STOR = %q, %v", line, err)
+					return
+				}
+				if _, err := fmt.Fprintf(serverControl, "%d preliminary response\r\n", test.code); err != nil {
+					_ = dataConn.Close()
+					serverErr <- err
+					return
+				}
+				if test.wantErr {
+					serverErr <- dataConn.Close()
+					return
+				}
+
+				tlsConn := tls.Server(dataConn, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
+				if err := tlsConn.Handshake(); err != nil {
+					_ = tlsConn.Close()
+					serverErr <- err
+					return
+				}
+				data, err := io.ReadAll(tlsConn)
+				if err != nil {
+					_ = tlsConn.Close()
+					serverErr <- err
+					return
+				}
+				if string(data) != "payload" {
+					_ = tlsConn.Close()
+					serverErr <- fmt.Errorf("stored data = %q, want payload", data)
+					return
+				}
+				if err := tlsConn.Close(); err != nil {
+					serverErr <- err
+					return
+				}
+				_, err = serverControl.Write([]byte("226 Transfer complete\r\n"))
+				serverErr <- err
+			}()
+
+			client := &FTPS{
+				host:      "127.0.0.1",
+				conn:      clientControl,
+				text:      textproto.NewConn(clientControl),
+				TLSConfig: tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test certificate is self-signed
+			}
+			err = client.StoreFile("test.txt", []byte("payload"))
+			if (err != nil) != test.wantErr {
+				t.Fatalf("StoreFile error = %v, want error=%v", err, test.wantErr)
+			}
+			if err := <-serverErr; err != nil {
+				t.Fatalf("scripted server: %v", err)
+			}
+		})
 	}
 }
 
