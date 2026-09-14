@@ -3,6 +3,7 @@ package ftps
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -16,13 +17,35 @@ import (
 	"time"
 )
 
+const (
+	// DefaultTimeout is the default limit for each network operation.
+	DefaultTimeout = 30 * time.Second
+	// DefaultMaxControlResponseSize is the default maximum control response size.
+	DefaultMaxControlResponseSize = 64 << 10
+	// DefaultMaxListSize is the default maximum directory listing size.
+	DefaultMaxListSize = 16 << 20
+	// DefaultMaxListLineSize is the default maximum directory listing line size.
+	DefaultMaxListLineSize = 64 << 10
+	// DefaultMaxRetrieveSize is the default in-memory retrieval limit.
+	DefaultMaxRetrieveSize = 100 << 20
+)
+
+var (
+	errCommandContainsNewline = errors.New("ftp command contains a newline")
+	errResponseTooLarge       = errors.New("ftp control response exceeds the configured limit")
+	errListTooLarge           = errors.New("ftp directory listing exceeds the configured limit")
+	errRetrieveTooLarge       = errors.New("retrieved file exceeds the configured in-memory limit")
+)
+
 // Dialer establishes network connections for an FTPS client.
 type Dialer interface {
 	Dial(network, address string) (net.Conn, error)
 }
 
+// FTPS is an FTPS client.
 type FTPS struct {
-	host string
+	host     string
+	dataHost string
 
 	conn net.Conn
 	text *textproto.Conn
@@ -30,6 +53,22 @@ type FTPS struct {
 	Debug     bool
 	TLSConfig tls.Config
 	Dialer    Dialer
+
+	// Timeout limits each network connection, handshake, command, and transfer.
+	// Zero uses DefaultTimeout. A negative value disables deadlines.
+	Timeout time.Duration
+	// MaxControlResponseSize limits each FTP control response in bytes.
+	// Zero uses DefaultMaxControlResponseSize. A negative value disables the limit.
+	MaxControlResponseSize int64
+	// MaxListSize limits the total bytes read by List.
+	// Zero uses DefaultMaxListSize. A negative value disables the limit.
+	MaxListSize int64
+	// MaxListLineSize limits one line read by List.
+	// Zero uses DefaultMaxListLineSize. A negative value disables the limit.
+	MaxListLineSize int
+	// MaxRetrieveSize limits bytes buffered by RetrieveFileData.
+	// Zero uses DefaultMaxRetrieveSize. A negative value disables the limit.
+	MaxRetrieveSize int64
 }
 
 func (ftps *FTPS) Connect(host string, port int) error {
@@ -48,6 +87,13 @@ func (ftps *FTPS) connect(host string, port int, implicit bool) (err error) {
 	ftps.conn, err = ftps.dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return err
+	}
+	ftps.dataHost = host
+	if remote, ok := ftps.conn.RemoteAddr().(*net.TCPAddr); ok {
+		ftps.dataHost = remote.IP.String()
+		if remote.Zone != "" {
+			ftps.dataHost += "%" + remote.Zone
+		}
 	}
 
 	if implicit {
@@ -130,10 +176,18 @@ func (ftps *FTPS) Noop() error {
 func (ftps *FTPS) request(cmd string, expected ...int) (message string, err error) {
 
 	ftps.isConnEstablished()
+	if strings.ContainsAny(cmd, "\r\n") {
+		return "", errCommandContainsNewline
+	}
 
-	ftps.debugInfo("<*cmd*> " + cmd)
+	ftps.debugInfo("<*cmd*> " + redactCommand(cmd))
 
+	clearDeadline, err := ftps.setDeadline(ftps.conn)
+	if err != nil {
+		return "", err
+	}
 	_, err = ftps.text.Cmd("%s", cmd)
+	clearDeadline()
 	if err != nil {
 		return
 	}
@@ -173,11 +227,18 @@ func (ftps *FTPS) response(expected ...int) (message string, err error) {
 
 	ftps.isConnEstablished()
 
-	code, message, err := ftps.text.ReadResponse(0)
+	clearDeadline, err := ftps.setDeadline(ftps.conn)
+	if err != nil {
+		return "", err
+	}
+	defer clearDeadline()
+
+	code, message, err := ftps.readResponse()
 
 	ftps.debugInfo(fmt.Sprintf("<*code*> %d", code))
 	ftps.debugInfo("<*message*> " + message)
 	if err != nil {
+		_ = ftps.conn.Close()
 		return message, err
 	}
 	for _, expectedCode := range expected {
@@ -191,7 +252,17 @@ func (ftps *FTPS) response(expected ...int) (message string, err error) {
 
 func (ftps *FTPS) upgradeConnToTLS(conn net.Conn) (net.Conn, error) {
 
-	tlsConn := tls.Client(conn, &ftps.TLSConfig)
+	config := ftps.TLSConfig.Clone()
+	if config.ServerName == "" {
+		config.ServerName = ftps.host
+	}
+	tlsConn := tls.Client(conn, config)
+	clearDeadline, err := ftps.setDeadline(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	defer clearDeadline()
 	if err := tlsConn.Handshake(); err != nil {
 		_ = conn.Close()
 		return nil, err
@@ -277,22 +348,45 @@ func (ftps *FTPS) List() (entries []Entry, err error) {
 	}
 	defer dataConn.Close()
 
-	reader := bufio.NewReader(dataConn)
-	for {
-		line, readErr := reader.ReadString('\n')
-		if len(line) > 0 {
-			entry, err := ftps.parseEntryLine(line)
-			if err != nil {
-				return nil, err
-			}
-			entries = append(entries, *entry)
-		}
-		if readErr == io.EOF {
+	clearDeadline, err := ftps.setDeadline(dataConn)
+	if err != nil {
+		return nil, err
+	}
+	defer clearDeadline()
+
+	listLimit := configuredLimit(ftps.MaxListSize, DefaultMaxListSize)
+	var reader io.Reader = dataConn
+	var limited *io.LimitedReader
+	if listLimit >= 0 {
+		limited = &io.LimitedReader{R: dataConn, N: listLimit + 1}
+		reader = limited
+	}
+	scanner := bufio.NewScanner(reader)
+	maxLineSize := configuredIntLimit(ftps.MaxListLineSize, DefaultMaxListLineSize)
+	initialBufferSize := min(4096, maxLineSize)
+	scanner.Buffer(make([]byte, initialBufferSize), maxLineSize)
+	var listErr error
+	for scanner.Scan() {
+		if limited != nil && limited.N == 0 {
+			listErr = errListTooLarge
 			break
 		}
-		if readErr != nil {
-			return nil, readErr
+		entry, parseErr := ftps.parseEntryLine(scanner.Text())
+		if parseErr != nil {
+			listErr = parseErr
+			break
 		}
+		entries = append(entries, *entry)
+	}
+	if listErr == nil {
+		listErr = scanner.Err()
+	}
+	if listErr == nil && limited != nil && limited.N == 0 {
+		listErr = errListTooLarge
+	}
+	if listErr != nil {
+		ftps.discardDataAndFinish(dataConn)
+		return nil, listErr
 	}
 	dataConn.Close()
 
@@ -366,6 +460,11 @@ func (ftps *FTPS) StoreReader(remoteFilepath string, r io.Reader) (err error) {
 	}
 	defer dataConn.Close()
 
+	clearDeadline, err := ftps.setDeadline(dataConn)
+	if err != nil {
+		return err
+	}
+	defer clearDeadline()
 	_, err = io.Copy(dataConn, r)
 	if err != nil {
 		return
@@ -389,9 +488,23 @@ func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err erro
 
 	buf := new(bytes.Buffer)
 
-	_, err = buf.ReadFrom(dataConn)
+	clearDeadline, err := ftps.setDeadline(dataConn)
+	if err != nil {
+		return nil, err
+	}
+	defer clearDeadline()
+	retrieveLimit := configuredLimit(ftps.MaxRetrieveSize, DefaultMaxRetrieveSize)
+	var reader io.Reader = dataConn
+	if retrieveLimit >= 0 {
+		reader = io.LimitReader(dataConn, retrieveLimit+1)
+	}
+	n, err := buf.ReadFrom(reader)
 	if err != nil {
 		return
+	}
+	if retrieveLimit >= 0 && n > retrieveLimit {
+		ftps.discardDataAndFinish(dataConn)
+		return nil, errRetrieveTooLarge
 	}
 
 	data = buf.Bytes()
@@ -427,6 +540,11 @@ func (ftps *FTPS) RetrieveWriter(remoteFilepath string, w io.Writer) (err error)
 	}
 	defer dataConn.Close()
 
+	clearDeadline, err := ftps.setDeadline(dataConn)
+	if err != nil {
+		return err
+	}
+	defer clearDeadline()
 	_, err = io.Copy(w, dataConn)
 	if err != nil {
 		return
@@ -456,7 +574,11 @@ func (ftps *FTPS) Quit() (err error) {
 
 func (ftps *FTPS) openDataConn(port int) (dataConn net.Conn, err error) {
 
-	dataConn, err = ftps.dial("tcp", net.JoinHostPort(ftps.host, strconv.Itoa(port)))
+	host := ftps.dataHost
+	if host == "" {
+		host = ftps.host
+	}
+	dataConn, err = ftps.dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return
 	}
@@ -466,9 +588,140 @@ func (ftps *FTPS) openDataConn(port int) (dataConn net.Conn, err error) {
 
 func (ftps *FTPS) dial(network, address string) (net.Conn, error) {
 	if ftps.Dialer != nil {
+		if dialer, ok := ftps.Dialer.(interface {
+			DialContext(context.Context, string, string) (net.Conn, error)
+		}); ok && ftps.timeout() > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), ftps.timeout())
+			defer cancel()
+			return dialer.DialContext(ctx, network, address)
+		}
 		return ftps.Dialer.Dial(network, address)
 	}
-	return net.Dial(network, address)
+	if ftps.timeout() <= 0 {
+		return net.Dial(network, address)
+	}
+	return net.DialTimeout(network, address, ftps.timeout())
+}
+
+func (ftps *FTPS) readResponse() (code int, message string, err error) {
+	limit := configuredLimit(ftps.MaxControlResponseSize, DefaultMaxControlResponseSize)
+	remaining := limit
+	line, err := ftps.readResponseLine(&remaining)
+	if err != nil {
+		return 0, "", err
+	}
+	code, continued, first, err := parseResponseLine(line)
+	if err != nil {
+		return 0, "", err
+	}
+
+	var messageBuilder strings.Builder
+	messageBuilder.WriteString(first)
+	for continued {
+		line, err = ftps.readResponseLine(&remaining)
+		if err != nil {
+			return 0, "", err
+		}
+		messageBuilder.WriteByte('\n')
+		lineCode, lineContinued, lineMessage, parseErr := parseResponseLine(line)
+		if parseErr == nil && lineCode == code {
+			messageBuilder.WriteString(lineMessage)
+			continued = lineContinued
+			continue
+		}
+		messageBuilder.WriteString(line)
+	}
+	return code, messageBuilder.String(), nil
+}
+
+func (ftps *FTPS) discardDataAndFinish(dataConn net.Conn) {
+	if _, err := io.Copy(io.Discard, dataConn); err != nil {
+		_ = ftps.conn.Close()
+		return
+	}
+	if err := dataConn.Close(); err != nil {
+		_ = ftps.conn.Close()
+		return
+	}
+	if _, err := ftps.response(226); err != nil {
+		_ = ftps.conn.Close()
+	}
+}
+
+func (ftps *FTPS) readResponseLine(remaining *int64) (string, error) {
+	var line []byte
+	for {
+		fragment, err := ftps.text.Reader.R.ReadSlice('\n')
+		if *remaining >= 0 {
+			if int64(len(fragment)) > *remaining {
+				return "", errResponseTooLarge
+			}
+			*remaining -= int64(len(fragment))
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		return string(line), nil
+	}
+}
+
+func parseResponseLine(line string) (code int, continued bool, message string, err error) {
+	if len(line) < 4 || line[3] != ' ' && line[3] != '-' {
+		return 0, false, "", textproto.ProtocolError(fmt.Sprintf("short response: %q", line))
+	}
+	code, err = strconv.Atoi(line[:3])
+	if err != nil || code < 100 {
+		return 0, false, "", textproto.ProtocolError(fmt.Sprintf("invalid response code: %q", line))
+	}
+	return code, line[3] == '-', line[4:], nil
+}
+
+func (ftps *FTPS) setDeadline(conn net.Conn) (func(), error) {
+	timeout := ftps.timeout()
+	if timeout <= 0 {
+		return func() {}, nil
+	}
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return nil, err
+	}
+	return func() { _ = conn.SetDeadline(time.Time{}) }, nil
+}
+
+func (ftps *FTPS) timeout() time.Duration {
+	if ftps.Timeout == 0 {
+		return DefaultTimeout
+	}
+	return ftps.Timeout
+}
+
+func configuredLimit(value, defaultValue int64) int64 {
+	if value == 0 {
+		return defaultValue
+	}
+	return value
+}
+
+func configuredIntLimit(value, defaultValue int) int {
+	if value == 0 {
+		return defaultValue
+	}
+	if value < 0 {
+		return int(^uint(0) >> 1)
+	}
+	return value
+}
+
+func redactCommand(cmd string) string {
+	if strings.HasPrefix(cmd, "PASS ") {
+		return "PASS <redacted>"
+	}
+	return cmd
 }
 
 func (ftps *FTPS) debugInfo(message string) {

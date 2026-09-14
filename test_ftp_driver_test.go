@@ -30,6 +30,10 @@ func newTestFTPServer(t *testing.T) int {
 }
 
 func newTestFTPServerWithCredentials(t *testing.T, username, password string) int {
+	return newTestFTPServerWithCertificate(t, username, password, newTestCertificate(t))
+}
+
+func newTestFTPServerWithCertificate(t *testing.T, username, password string, certificate tls.Certificate) int {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -38,7 +42,7 @@ func newTestFTPServerWithCredentials(t *testing.T, username, password string) in
 	}
 	driver := &testFTPDriver{
 		fs:       afero.NewBasePathFs(afero.NewOsFs(), t.TempDir()),
-		cert:     newTestCertificate(t),
+		cert:     certificate,
 		username: username,
 		password: password,
 		settings: &ftpserver.Settings{

@@ -3,9 +3,13 @@ package ftps
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/textproto"
 	"os"
@@ -413,6 +417,62 @@ func TestLoginPreservesPercentInPassword(t *testing.T) {
 	}
 }
 
+func TestRequestRejectsCommandInjection(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	client := &FTPS{conn: clientConn, text: textproto.NewConn(clientConn)}
+
+	if _, err := client.request("CWD safe\r\nDELE important.txt", 250); !errors.Is(err, errCommandContainsNewline) {
+		t.Fatalf("request error = %v, want %v", err, errCommandContainsNewline)
+	}
+}
+
+func TestDebugRedactsPassword(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	serverErr := make(chan error, 1)
+	go func() {
+		line, err := bufio.NewReader(serverConn).ReadString('\n')
+		if err == nil && line != "PASS top-secret\r\n" {
+			err = fmt.Errorf("command = %q, want PASS command", line)
+		}
+		if err == nil {
+			_, err = serverConn.Write([]byte("230 logged in\r\n"))
+		}
+		serverErr <- err
+	}()
+
+	var output bytes.Buffer
+	previousWriter := log.Writer()
+	previousFlags := log.Flags()
+	previousPrefix := log.Prefix()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	t.Cleanup(func() {
+		log.SetOutput(previousWriter)
+		log.SetFlags(previousFlags)
+		log.SetPrefix(previousPrefix)
+	})
+
+	client := &FTPS{Debug: true, conn: clientConn, text: textproto.NewConn(clientConn)}
+	if _, err := client.request("PASS top-secret", 230); err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("scripted server: %v", err)
+	}
+	if strings.Contains(output.String(), "top-secret") {
+		t.Fatalf("debug output exposed password: %q", output.String())
+	}
+	if !strings.Contains(output.String(), "PASS <redacted>") {
+		t.Fatalf("debug output = %q, want redacted PASS command", output.String())
+	}
+}
+
 func TestNoop(t *testing.T) {
 	client := newLoggedInClient(t)
 	if err := client.Noop(); err != nil {
@@ -424,6 +484,102 @@ func TestConnectRejectsUntrustedCertificate(t *testing.T) {
 	client := new(FTPS)
 	if err := client.Connect("127.0.0.1", newTestFTPServer(t)); err == nil {
 		t.Fatal("Connect succeeded with an untrusted certificate")
+	}
+}
+
+func TestConnectUsesHostForCertificateVerification(t *testing.T) {
+	certificate := newTestCertificate(t)
+	leaf, err := x509.ParseCertificate(certificate.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse test certificate: %v", err)
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(leaf)
+
+	client := &FTPS{TLSConfig: tls.Config{RootCAs: roots}}
+	port := newTestFTPServerWithCertificate(t, "ftptester", "ftptester", certificate)
+	if err := client.Connect("127.0.0.1", port); err != nil {
+		t.Fatalf("Connect with trusted certificate: %v", err)
+	}
+	if client.TLSConfig.ServerName != "" {
+		t.Fatalf("Connect mutated TLSConfig.ServerName to %q", client.TLSConfig.ServerName)
+	}
+	if err := client.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+}
+
+func TestResponseSizeLimit(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	client := &FTPS{
+		conn:                   clientConn,
+		text:                   textproto.NewConn(clientConn),
+		MaxControlResponseSize: 16,
+	}
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		_, _ = serverConn.Write([]byte("220 " + strings.Repeat("x", 32) + "\r\n"))
+	}()
+
+	_, err := client.response(220)
+	if !errors.Is(err, errResponseTooLarge) {
+		t.Fatalf("response error = %v, want %v", err, errResponseTooLarge)
+	}
+	if _, err := client.request("NOOP", 200); err == nil {
+		t.Fatal("request succeeded after an oversized response invalidated the connection")
+	}
+	_ = clientConn.Close()
+	_ = serverConn.Close()
+	<-serverDone
+}
+
+func TestMultilineResponse(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	go func() {
+		_, _ = serverConn.Write([]byte("220-first line\r\nsecond line\r\n220 last line\r\n"))
+	}()
+
+	client := &FTPS{conn: clientConn, text: textproto.NewConn(clientConn)}
+	message, err := client.response(220)
+	if err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	if want := "first line\nsecond line\nlast line"; message != want {
+		t.Fatalf("response message = %q, want %q", message, want)
+	}
+}
+
+func TestResponseTimeout(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+	client := &FTPS{
+		conn:    clientConn,
+		text:    textproto.NewConn(clientConn),
+		Timeout: 10 * time.Millisecond,
+	}
+
+	if _, err := client.response(220); err == nil {
+		t.Fatal("response succeeded without server data")
+	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+		t.Fatalf("response error = %v, want timeout", err)
+	}
+}
+
+func TestTLSHandshakeTimeout(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	client := &FTPS{
+		host:      "localhost",
+		TLSConfig: tls.Config{InsecureSkipVerify: true}, //nolint:gosec // no certificate is exchanged
+		Timeout:   10 * time.Millisecond,
+	}
+
+	if _, err := client.upgradeConnToTLS(clientConn); err == nil {
+		t.Fatal("TLS handshake succeeded without a server response")
 	}
 }
 
@@ -496,6 +652,49 @@ func TestRetrieveFileDataMissingRemoteFile(t *testing.T) {
 	}
 }
 
+func TestRetrieveFileDataSizeLimit(t *testing.T) {
+	client := newLoggedInClient(t)
+	if err := client.StoreFile("large.txt", []byte("large")); err != nil {
+		t.Fatalf("StoreFile: %v", err)
+	}
+	client.MaxRetrieveSize = 4
+	if data, err := client.RetrieveFileData("large.txt"); !errors.Is(err, errRetrieveTooLarge) || data != nil {
+		t.Fatalf("RetrieveFileData = %q, %v; want nil, %v", data, err, errRetrieveTooLarge)
+	}
+	if err := client.Noop(); err != nil {
+		t.Fatalf("Noop after size limit: %v", err)
+	}
+}
+
+func TestListSizeLimit(t *testing.T) {
+	client := newLoggedInClient(t)
+	if err := client.StoreFile("listed.txt", []byte("payload")); err != nil {
+		t.Fatalf("StoreFile: %v", err)
+	}
+	client.MaxListSize = 1
+	if _, err := client.List(); !errors.Is(err, errListTooLarge) {
+		t.Fatalf("List error = %v, want %v", err, errListTooLarge)
+	}
+	if err := client.Noop(); err != nil {
+		t.Fatalf("Noop after list size limit: %v", err)
+	}
+}
+
+func TestListLineSizeLimit(t *testing.T) {
+	client := newLoggedInClient(t)
+	name := strings.Repeat("x", 128)
+	if err := client.StoreFile(name, []byte("payload")); err != nil {
+		t.Fatalf("StoreFile: %v", err)
+	}
+	client.MaxListLineSize = 32
+	if _, err := client.List(); err == nil {
+		t.Fatal("List succeeded with a line over the configured limit")
+	}
+	if err := client.Noop(); err != nil {
+		t.Fatalf("Noop after list line size limit: %v", err)
+	}
+}
+
 func TestRetrieveFileLocalCreationFailure(t *testing.T) {
 	client := newLoggedInClient(t)
 	if err := client.StoreFile("existing.txt", []byte("payload")); err != nil {
@@ -533,6 +732,55 @@ func TestStoreAndRetrievePayloads(t *testing.T) {
 
 type recordingDialer struct {
 	addresses []string
+}
+
+type dialFunc func(network, address string) (net.Conn, error)
+
+func (f dialFunc) Dial(network, address string) (net.Conn, error) {
+	return f(network, address)
+}
+
+type blockingContextDialer struct {
+	usedDialContext bool
+}
+
+func (d *blockingContextDialer) Dial(_, _ string) (net.Conn, error) {
+	return nil, errors.New("Dial called instead of DialContext")
+}
+
+func (d *blockingContextDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	d.usedDialContext = true
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestCustomDialContextTimeout(t *testing.T) {
+	dialer := new(blockingContextDialer)
+	client := &FTPS{Dialer: dialer, Timeout: 10 * time.Millisecond}
+	_, err := client.dial("tcp", "example.com:21")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("dial error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if !dialer.usedDialContext {
+		t.Fatal("DialContext was not used")
+	}
+}
+
+func TestOpenDataConnUsesPinnedControlAddress(t *testing.T) {
+	var gotAddress string
+	client := &FTPS{
+		host:     "ftp.example",
+		dataHost: "192.0.2.10",
+		Dialer: dialFunc(func(_, address string) (net.Conn, error) {
+			gotAddress = address
+			return nil, errors.New("stop after recording address")
+		}),
+	}
+
+	_, _ = client.openDataConn(2121)
+	if want := "192.0.2.10:2121"; gotAddress != want {
+		t.Fatalf("data connection address = %q, want %q", gotAddress, want)
+	}
 }
 
 func (d *recordingDialer) Dial(network, address string) (net.Conn, error) {

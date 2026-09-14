@@ -3,16 +3,11 @@
 ## Information
 This implementation does not implement the full FTP/FTPS specification. Only a small subset.
 
-I have not done a security review of the code, yet. Therefore no guarantee is given. It would be nice if somebody could do a security review and report back if the implementation is vulnerable.
-
 ## Installation
 	go get github.com/marcobeierer/ftps
 
 ## Usage
 	ftps := new(FTPS)
-
-	ftps.TLSConfig.InsecureSkipVerify = true // often necessary in shared hosting environments
-	ftps.Debug = true
 
 	err := ftps.Connect("localhost", 21)
 	if err != nil {
@@ -59,6 +54,26 @@ are established:
 
 Any type with a `Dial(network, address string) (net.Conn, error)` method can be
 used. This includes SOCKS dialers from `golang.org/x/net/proxy`.
+
+The default timeout for connection establishment and each subsequent network
+operation is 30 seconds. Set `Timeout` to another duration when needed. Custom
+dialers that implement `DialContext` use this timeout during connection
+establishment; other custom dialers are responsible for their own dial timeout.
+
+### TLS verification
+
+Server certificates are verified against the connection hostname and the
+system certificate pool by default. For a private certificate authority, add
+that authority to `TLSConfig.RootCAs`. Do not use `InsecureSkipVerify` in
+production.
+
+### Resource limits
+
+Control responses, directory listings, listing lines, and files returned by
+`RetrieveFileData` have conservative default size limits. Configure
+`MaxControlResponseSize`, `MaxListSize`, `MaxListLineSize`, or
+`MaxRetrieveSize` when larger values are required. Use `RetrieveWriter` to
+download large files without buffering them in memory.
 
 ### Streaming transfers
 
