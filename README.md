@@ -30,6 +30,11 @@ I have not done a security review of the code, yet. Therefore no guarantee is gi
 	}
 	log.Printf("Current working directory: %s", directory)
 
+	// Verify or keep alive an idle control connection.
+	if err := ftps.Noop(); err != nil {
+		panic(err)
+	}
+
 	err = ftps.Quit()
 	if err != nil {
 		panic(err)
