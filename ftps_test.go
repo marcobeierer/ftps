@@ -413,6 +413,13 @@ func TestLoginPreservesPercentInPassword(t *testing.T) {
 	}
 }
 
+func TestNoop(t *testing.T) {
+	client := newLoggedInClient(t)
+	if err := client.Noop(); err != nil {
+		t.Fatalf("Noop: %v", err)
+	}
+}
+
 func TestConnectRejectsUntrustedCertificate(t *testing.T) {
 	client := new(FTPS)
 	if err := client.Connect("127.0.0.1", newTestFTPServer(t)); err == nil {
@@ -501,5 +508,22 @@ func TestCustomDialerHandlesControlAndDataConnections(t *testing.T) {
 	}
 	if host, _, err := net.SplitHostPort(dialer.addresses[1]); err != nil || host != "127.0.0.1" {
 		t.Errorf("data address = %q, want 127.0.0.1 with a passive port", dialer.addresses[1])
+	}
+}
+
+func TestStoreReaderAndRetrieveWriter(t *testing.T) {
+	client := newLoggedInClient(t)
+	want := bytes.Repeat([]byte("streamed FTPS payload\n"), 8192)
+
+	if err := client.StoreReader("streamed.txt", bytes.NewReader(want)); err != nil {
+		t.Fatalf("StoreReader: %v", err)
+	}
+
+	var got bytes.Buffer
+	if err := client.RetrieveWriter("streamed.txt", &got); err != nil {
+		t.Fatalf("RetrieveWriter: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("RetrieveWriter wrote %d bytes, want %d", got.Len(), len(want))
 	}
 }
