@@ -461,3 +461,20 @@ func TestStoreAndRetrievePayloads(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreReaderAndRetrieveWriter(t *testing.T) {
+	client := newLoggedInClient(t)
+	want := bytes.Repeat([]byte("streamed FTPS payload\n"), 8192)
+
+	if err := client.StoreReader("streamed.txt", bytes.NewReader(want)); err != nil {
+		t.Fatalf("StoreReader: %v", err)
+	}
+
+	var got bytes.Buffer
+	if err := client.RetrieveWriter("streamed.txt", &got); err != nil {
+		t.Fatalf("RetrieveWriter: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("RetrieveWriter wrote %d bytes, want %d", got.Len(), len(want))
+	}
+}
