@@ -413,6 +413,13 @@ func TestLoginPreservesPercentInPassword(t *testing.T) {
 	}
 }
 
+func TestNoop(t *testing.T) {
+	client := newLoggedInClient(t)
+	if err := client.Noop(); err != nil {
+		t.Fatalf("Noop: %v", err)
+	}
+}
+
 func TestConnectRejectsUntrustedCertificate(t *testing.T) {
 	client := new(FTPS)
 	if err := client.Connect("127.0.0.1", newTestFTPServer(t)); err == nil {
@@ -461,7 +468,11 @@ func TestConnectImplicitStartsTLSBeforeGreeting(t *testing.T) {
 		serverErr <- err
 	}()
 
-	client := &FTPS{TLSConfig: tls.Config{InsecureSkipVerify: true}} //nolint:gosec // test certificate is self-signed
+	dialer := new(recordingDialer)
+	client := &FTPS{
+		Dialer:    dialer,
+		TLSConfig: tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test certificate is self-signed
+	}
 	port := listener.Addr().(*net.TCPAddr).Port
 	if err := client.ConnectImplicit("127.0.0.1", port); err != nil {
 		t.Fatalf("ConnectImplicit: %v", err)
@@ -471,6 +482,10 @@ func TestConnectImplicitStartsTLSBeforeGreeting(t *testing.T) {
 	}
 	if err := <-serverErr; err != nil {
 		t.Fatalf("implicit FTPS server: %v", err)
+	}
+	wantAddress := net.JoinHostPort("127.0.0.1", fmt.Sprint(port))
+	if len(dialer.addresses) != 1 || dialer.addresses[0] != wantAddress {
+		t.Fatalf("Dial called for %v, want [%s]", dialer.addresses, wantAddress)
 	}
 }
 
@@ -513,5 +528,64 @@ func TestStoreAndRetrievePayloads(t *testing.T) {
 				t.Fatalf("RetrieveFileData = %v, want %v", got, test.payload)
 			}
 		})
+	}
+}
+
+type recordingDialer struct {
+	addresses []string
+}
+
+func (d *recordingDialer) Dial(network, address string) (net.Conn, error) {
+	d.addresses = append(d.addresses, address)
+	return net.Dial(network, address)
+}
+
+func TestCustomDialerHandlesControlAndDataConnections(t *testing.T) {
+	dialer := new(recordingDialer)
+	client := &FTPS{
+		Dialer:    dialer,
+		TLSConfig: tls.Config{InsecureSkipVerify: true}, //nolint:gosec // test certificate is self-signed
+	}
+	serverPort := newTestFTPServer(t)
+
+	if err := client.Connect("127.0.0.1", serverPort); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := client.Login("ftptester", "ftptester"); err != nil {
+		t.Fatalf("Login: %v", err)
+	}
+	if err := client.StoreFile("dialed.txt", []byte("payload")); err != nil {
+		t.Fatalf("StoreFile: %v", err)
+	}
+	if err := client.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+
+	if len(dialer.addresses) != 2 {
+		t.Fatalf("Dial called for %v, want control and data connections", dialer.addresses)
+	}
+	wantControl := net.JoinHostPort("127.0.0.1", fmt.Sprint(serverPort))
+	if dialer.addresses[0] != wantControl {
+		t.Errorf("control address = %q, want %q", dialer.addresses[0], wantControl)
+	}
+	if host, _, err := net.SplitHostPort(dialer.addresses[1]); err != nil || host != "127.0.0.1" {
+		t.Errorf("data address = %q, want 127.0.0.1 with a passive port", dialer.addresses[1])
+	}
+}
+
+func TestStoreReaderAndRetrieveWriter(t *testing.T) {
+	client := newLoggedInClient(t)
+	want := bytes.Repeat([]byte("streamed FTPS payload\n"), 8192)
+
+	if err := client.StoreReader("streamed.txt", bytes.NewReader(want)); err != nil {
+		t.Fatalf("StoreReader: %v", err)
+	}
+
+	var got bytes.Buffer
+	if err := client.RetrieveWriter("streamed.txt", &got); err != nil {
+		t.Fatalf("RetrieveWriter: %v", err)
+	}
+	if !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("RetrieveWriter wrote %d bytes, want %d", got.Len(), len(want))
 	}
 }

@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+// Dialer establishes network connections for an FTPS client.
+type Dialer interface {
+	Dial(network, address string) (net.Conn, error)
+}
+
 type FTPS struct {
 	host string
 
@@ -24,6 +29,7 @@ type FTPS struct {
 
 	Debug     bool
 	TLSConfig tls.Config
+	Dialer    Dialer
 }
 
 func (ftps *FTPS) Connect(host string, port int) error {
@@ -37,10 +43,9 @@ func (ftps *FTPS) ConnectImplicit(host string, port int) error {
 }
 
 func (ftps *FTPS) connect(host string, port int, implicit bool) (err error) {
-
 	ftps.host = host
 
-	ftps.conn, err = net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
+	ftps.conn, err = ftps.dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return err
 	}
@@ -114,6 +119,12 @@ func (ftps *FTPS) Login(username, password string) (err error) {
 	}
 
 	return
+}
+
+// Noop verifies that the control connection is still responsive.
+func (ftps *FTPS) Noop() error {
+	_, err := ftps.request("NOOP", 200)
+	return err
 }
 
 func (ftps *FTPS) request(cmd string, expected ...int) (message string, err error) {
@@ -344,27 +355,26 @@ func (ftps *FTPS) parseEntryLine(line string) (entry *Entry, err error) {
 }
 
 func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
+	return ftps.StoreReader(remoteFilepath, bytes.NewReader(data))
+}
 
+// StoreReader stores data read from r at remoteFilepath.
+func (ftps *FTPS) StoreReader(remoteFilepath string, r io.Reader) (err error) {
 	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", remoteFilepath), 125, 150)
 	if err != nil {
 		return
 	}
 	defer dataConn.Close()
 
-	count, err := dataConn.Write(data)
+	_, err = io.Copy(dataConn, r)
 	if err != nil {
 		return
 	}
-	dataConn.Close()
-
-	if len(data) != count {
-		return errors.New("file transfer not complete")
+	if err = dataConn.Close(); err != nil {
+		return
 	}
 
 	_, err = ftps.response(226)
-	if err != nil {
-		return
-	}
 
 	return
 }
@@ -400,24 +410,30 @@ func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err erro
 }
 
 func (ftps *FTPS) RetrieveFile(remoteFilepath, localFilepath string) (err error) {
+	file, err := os.Create(localFilepath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 
+	return ftps.RetrieveWriter(remoteFilepath, file)
+}
+
+// RetrieveWriter retrieves remoteFilepath and writes its contents to w.
+func (ftps *FTPS) RetrieveWriter(remoteFilepath string, w io.Writer) (err error) {
 	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 125, 150)
 	if err != nil {
 		return
 	}
 	defer dataConn.Close()
 
-	file, err := os.Create(localFilepath)
+	_, err = io.Copy(w, dataConn)
 	if err != nil {
 		return
 	}
-	defer file.Close()
-
-	_, err = io.Copy(file, dataConn)
-	if err != nil {
+	if err = dataConn.Close(); err != nil {
 		return
 	}
-	dataConn.Close()
 
 	_, err = ftps.response(226)
 	if err != nil {
@@ -440,12 +456,19 @@ func (ftps *FTPS) Quit() (err error) {
 
 func (ftps *FTPS) openDataConn(port int) (dataConn net.Conn, err error) {
 
-	dataConn, err = net.Dial("tcp", net.JoinHostPort(ftps.host, strconv.Itoa(port)))
+	dataConn, err = ftps.dial("tcp", net.JoinHostPort(ftps.host, strconv.Itoa(port)))
 	if err != nil {
 		return
 	}
 
 	return
+}
+
+func (ftps *FTPS) dial(network, address string) (net.Conn, error) {
+	if ftps.Dialer != nil {
+		return ftps.Dialer.Dial(network, address)
+	}
+	return net.Dial(network, address)
 }
 
 func (ftps *FTPS) debugInfo(message string) {

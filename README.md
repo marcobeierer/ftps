@@ -30,6 +30,11 @@ I have not done a security review of the code, yet. Therefore no guarantee is gi
 	}
 	log.Printf("Current working directory: %s", directory)
 
+	// Verify or keep alive an idle control connection.
+	if err := ftps.Noop(); err != nil {
+		panic(err)
+	}
+
 	err = ftps.Quit()
 	if err != nil {
 		panic(err)
@@ -42,6 +47,29 @@ For servers that establish TLS immediately, commonly on port 990, use
 
 	err := ftps.ConnectImplicit("localhost", 990)
 	if err != nil {
+		panic(err)
+	}
+
+### Custom connections and proxies
+
+Set `Dialer` to control how both the FTPS control and passive data connections
+are established:
+
+	ftps.Dialer = &net.Dialer{Timeout: 10 * time.Second}
+
+Any type with a `Dial(network, address string) (net.Conn, error)` method can be
+used. This includes SOCKS dialers from `golang.org/x/net/proxy`.
+
+### Streaming transfers
+
+Use `StoreReader` and `RetrieveWriter` to transfer data without buffering the
+entire file in memory:
+
+	if err := ftps.StoreReader("remote.dat", source); err != nil {
+		panic(err)
+	}
+
+	if err := ftps.RetrieveWriter("remote.dat", destination); err != nil {
 		panic(err)
 	}
 
