@@ -40,6 +40,16 @@ I have not done a security review of the code, yet. Therefore no guarantee is gi
 		panic(err)
 	}
 
+### Custom connections and proxies
+
+Set `Dialer` to control how both the FTPS control and passive data connections
+are established:
+
+	ftps.Dialer = &net.Dialer{Timeout: 10 * time.Second}
+
+Any type with a `Dial(network, address string) (net.Conn, error)` method can be
+used. This includes SOCKS dialers from `golang.org/x/net/proxy`.
+
 ### Streaming transfers
 
 Use `StoreReader` and `RetrieveWriter` to transfer data without buffering the
