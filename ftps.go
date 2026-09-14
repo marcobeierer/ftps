@@ -100,7 +100,7 @@ func (ftps *FTPS) Login(username, password string) (err error) {
 	return
 }
 
-func (ftps *FTPS) request(cmd string, expected int) (message string, err error) {
+func (ftps *FTPS) request(cmd string, expected ...int) (message string, err error) {
 
 	ftps.isConnEstablished()
 
@@ -111,12 +111,12 @@ func (ftps *FTPS) request(cmd string, expected int) (message string, err error) 
 		return
 	}
 
-	message, err = ftps.response(expected)
+	message, err = ftps.response(expected...)
 
 	return
 }
 
-func (ftps *FTPS) requestDataConn(cmd string, expected int) (dataConn net.Conn, err error) {
+func (ftps *FTPS) requestDataConn(cmd string, expected ...int) (dataConn net.Conn, err error) {
 
 	port, err := ftps.pasv()
 	if err != nil {
@@ -128,7 +128,7 @@ func (ftps *FTPS) requestDataConn(cmd string, expected int) (dataConn net.Conn, 
 		return nil, err
 	}
 
-	_, err = ftps.request(cmd, expected)
+	_, err = ftps.request(cmd, expected...)
 	if err != nil {
 		dataConn.Close()
 		return nil, err
@@ -142,16 +142,24 @@ func (ftps *FTPS) requestDataConn(cmd string, expected int) (dataConn net.Conn, 
 	return
 }
 
-func (ftps *FTPS) response(expected int) (message string, err error) {
+func (ftps *FTPS) response(expected ...int) (message string, err error) {
 
 	ftps.isConnEstablished()
 
-	code, message, err := ftps.text.ReadResponse(expected)
+	code, message, err := ftps.text.ReadResponse(0)
 
 	ftps.debugInfo(fmt.Sprintf("<*code*> %d", code))
 	ftps.debugInfo("<*message*> " + message)
+	if err != nil {
+		return message, err
+	}
+	for _, expectedCode := range expected {
+		if code == expectedCode {
+			return message, nil
+		}
+	}
 
-	return
+	return message, &textproto.Error{Code: code, Msg: message}
 }
 
 func (ftps *FTPS) upgradeConnToTLS(conn net.Conn) (net.Conn, error) {
@@ -236,7 +244,7 @@ func (ftps *FTPS) List() (entries []Entry, err error) {
 
 	// TODO add support for MLSD
 
-	dataConn, err := ftps.requestDataConn("LIST -a", 150) // TODO use also -L to resolve links?
+	dataConn, err := ftps.requestDataConn("LIST -a", 125, 150) // TODO use also -L to resolve links?
 	if err != nil {
 		return
 	}
@@ -321,7 +329,7 @@ func (ftps *FTPS) parseEntryLine(line string) (entry *Entry, err error) {
 
 func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 
-	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", remoteFilepath), 150)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", remoteFilepath), 125, 150)
 	if err != nil {
 		return
 	}
@@ -347,7 +355,7 @@ func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 
 func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err error) {
 
-	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 150)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 125, 150)
 	if err != nil {
 		return
 	}
@@ -377,7 +385,7 @@ func (ftps *FTPS) RetrieveFileData(remoteFilepath string) (data []byte, err erro
 
 func (ftps *FTPS) RetrieveFile(remoteFilepath, localFilepath string) (err error) {
 
-	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 150)
+	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 125, 150)
 	if err != nil {
 		return
 	}
