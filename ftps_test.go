@@ -420,6 +420,60 @@ func TestConnectRejectsUntrustedCertificate(t *testing.T) {
 	}
 }
 
+func TestConnectImplicitStartsTLSBeforeGreeting(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	certificate := newTestCertificate(t)
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		tlsConn := tls.Server(conn, &tls.Config{
+			Certificates: []tls.Certificate{certificate},
+			MinVersion:   tls.VersionTLS12,
+		})
+		defer tlsConn.Close()
+		if err := tlsConn.Handshake(); err != nil {
+			serverErr <- err
+			return
+		}
+		if _, err := tlsConn.Write([]byte("220 implicit FTPS ready\r\n")); err != nil {
+			serverErr <- err
+			return
+		}
+		line, err := bufio.NewReader(tlsConn).ReadString('\n')
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if line != "QUIT\r\n" {
+			serverErr <- fmt.Errorf("command = %q, want QUIT", line)
+			return
+		}
+		_, err = tlsConn.Write([]byte("221 goodbye\r\n"))
+		serverErr <- err
+	}()
+
+	client := &FTPS{TLSConfig: tls.Config{InsecureSkipVerify: true}} //nolint:gosec // test certificate is self-signed
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := client.ConnectImplicit("127.0.0.1", port); err != nil {
+		t.Fatalf("ConnectImplicit: %v", err)
+	}
+	if err := client.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("implicit FTPS server: %v", err)
+	}
+}
+
 func TestRetrieveFileDataMissingRemoteFile(t *testing.T) {
 	client := newLoggedInClient(t)
 	if data, err := client.RetrieveFileData("missing.txt"); err == nil || data != nil {

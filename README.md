@@ -35,6 +35,16 @@ I have not done a security review of the code, yet. Therefore no guarantee is gi
 		panic(err)
 	}
 
+### Implicit FTPS
+
+For servers that establish TLS immediately, commonly on port 990, use
+`ConnectImplicit` instead of `Connect`:
+
+	err := ftps.ConnectImplicit("localhost", 990)
+	if err != nil {
+		panic(err)
+	}
+
 ## Testing
 Run the default test suite with:
 
