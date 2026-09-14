@@ -331,6 +331,7 @@ func (ftps *FTPS) StoreFile(remoteFilepath string, data []byte) (err error) {
 	return ftps.StoreReader(remoteFilepath, bytes.NewReader(data))
 }
 
+// StoreReader stores data read from r at remoteFilepath.
 func (ftps *FTPS) StoreReader(remoteFilepath string, r io.Reader) (err error) {
 	dataConn, err := ftps.requestDataConn(fmt.Sprintf("STOR %s", remoteFilepath), 125, 150)
 	if err != nil {
@@ -391,6 +392,7 @@ func (ftps *FTPS) RetrieveFile(remoteFilepath, localFilepath string) (err error)
 	return ftps.RetrieveWriter(remoteFilepath, file)
 }
 
+// RetrieveWriter retrieves remoteFilepath and writes its contents to w.
 func (ftps *FTPS) RetrieveWriter(remoteFilepath string, w io.Writer) (err error) {
 	dataConn, err := ftps.requestDataConn(fmt.Sprintf("RETR %s", remoteFilepath), 125, 150)
 	if err != nil {

@@ -35,6 +35,19 @@ I have not done a security review of the code, yet. Therefore no guarantee is gi
 		panic(err)
 	}
 
+### Streaming transfers
+
+Use `StoreReader` and `RetrieveWriter` to transfer data without buffering the
+entire file in memory:
+
+	if err := ftps.StoreReader("remote.dat", source); err != nil {
+		panic(err)
+	}
+
+	if err := ftps.RetrieveWriter("remote.dat", destination); err != nil {
+		panic(err)
+	}
+
 ## Testing
 Run the default test suite with:
 
