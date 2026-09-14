@@ -6,7 +6,7 @@ This implementation does not implement the full FTP/FTPS specification. Only a s
 I have not done a security review of the code, yet. Therefore no guarantee is given. It would be nice if somebody could do a security review and report back if the implementation is vulnerable.
 
 ## Installation
-	go get github.com/webguerilla/ftps
+	go get github.com/marcobeierer/ftps
 
 ## Usage
 	ftps := new(FTPS)
@@ -34,6 +34,15 @@ I have not done a security review of the code, yet. Therefore no guarantee is gi
 	if err != nil {
 		panic(err)
 	}
+
+## Testing
+Run the default test suite with:
+
+	go test ./...
+
+The tests start an in-process explicit FTPS server with temporary storage and a self-signed certificate. No external FTPS server or environment variable is required.
+
+The `github.com/fclairamb/ftpserverlib` and `github.com/spf13/afero` dependencies are used only by the test files to provide this server and its temporary filesystem. They are not used by the FTPS client at runtime.
 
 ## Credits
 This work was inspired by the work of jlaffaye (https://github.com/jlaffaye/ftp) and smallfish (https://github.com/smallfish/ftp).
