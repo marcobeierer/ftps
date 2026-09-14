@@ -100,6 +100,12 @@ func (ftps *FTPS) Login(username, password string) (err error) {
 	return
 }
 
+// Noop verifies that the control connection is still responsive.
+func (ftps *FTPS) Noop() error {
+	_, err := ftps.request("NOOP", 200)
+	return err
+}
+
 func (ftps *FTPS) request(cmd string, expected ...int) (message string, err error) {
 
 	ftps.isConnEstablished()

@@ -413,6 +413,13 @@ func TestLoginPreservesPercentInPassword(t *testing.T) {
 	}
 }
 
+func TestNoop(t *testing.T) {
+	client := newLoggedInClient(t)
+	if err := client.Noop(); err != nil {
+		t.Fatalf("Noop: %v", err)
+	}
+}
+
 func TestConnectRejectsUntrustedCertificate(t *testing.T) {
 	client := new(FTPS)
 	if err := client.Connect("127.0.0.1", newTestFTPServer(t)); err == nil {
