@@ -1,101 +1,90 @@
 package ftps
 
 import (
-	"io/ioutil"
-	"log"
+	"crypto/tls"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestFTPS(t *testing.T) {
+	serverPort := newTestFTPServer(t)
 
-	ftps := new(FTPS)
+	client := new(FTPS)
+	client.TLSConfig = tls.Config{InsecureSkipVerify: true} //nolint:gosec // test certificate is self-signed
 
-	ftps.TLSConfig.InsecureSkipVerify = true
-	ftps.Debug = true
-
-	err := ftps.Connect("localhost", 21)
-	if err != nil {
-		panic(err)
+	if err := client.Connect("127.0.0.1", serverPort); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := client.Login("ftptester", "ftptester"); err != nil {
+		t.Fatalf("Login: %v", err)
 	}
 
-	err = ftps.Login("ftptester", "ftptester")
+	workingDirectory, err := client.PrintWorkingDirectory()
 	if err != nil {
-		panic(err)
+		t.Fatalf("PWD: %v", err)
+	}
+	if !strings.Contains(workingDirectory, "/") {
+		t.Fatalf("PWD = %q, want a root directory", workingDirectory)
 	}
 
-	directory, err := ftps.PrintWorkingDirectory()
-	if err != nil {
-		panic(err)
+	if err := client.MakeDirectory("websites"); err != nil {
+		t.Fatalf("MakeDirectory: %v", err)
 	}
-	log.Printf("Current working directory: %s", directory)
-
-	err = ftps.MakeDirectory("websites")
-	if err != nil {
-		panic(err)
+	if err := client.ChangeWorkingDirectory("websites"); err != nil {
+		t.Fatalf("ChangeWorkingDirectory into websites: %v", err)
 	}
-
-	err = ftps.ChangeWorkingDirectory("websites")
-	if err != nil {
-		panic(err)
+	if err := client.ChangeWorkingDirectory(".."); err != nil {
+		t.Fatalf("ChangeWorkingDirectory to parent: %v", err)
+	}
+	if err := client.RemoveDirectory("websites"); err != nil {
+		t.Fatalf("RemoveDirectory: %v", err)
 	}
 
-	directory, err = ftps.PrintWorkingDirectory()
-	if err != nil {
-		panic(err)
+	want := []byte("self-contained explicit FTPS test")
+	if err := client.StoreFile("test.txt", want); err != nil {
+		t.Fatalf("StoreFile: %v", err)
 	}
-	log.Printf("Current working directory: %s", directory)
-
-	err = ftps.ChangeWorkingDirectory("..")
+	got, err := client.RetrieveFileData("test.txt")
 	if err != nil {
-		panic(err)
+		t.Fatalf("RetrieveFileData: %v", err)
 	}
-
-	directory, err = ftps.PrintWorkingDirectory()
-	if err != nil {
-		panic(err)
-	}
-	log.Printf("Current working directory: %s", directory)
-
-	err = ftps.RemoveDirectory("websites")
-	if err != nil {
-		panic(err)
+	if string(got) != string(want) {
+		t.Fatalf("RetrieveFileData = %q, want %q", got, want)
 	}
 
-	directory, err = ftps.PrintWorkingDirectory()
-	if err != nil {
-		panic(err)
+	localCopy := filepath.Join(t.TempDir(), "copy.txt")
+	if err := client.RetrieveFile("test.txt", localCopy); err != nil {
+		t.Fatalf("RetrieveFile: %v", err)
 	}
-	log.Printf("Current working directory: %s", directory)
-
-	data, err := ioutil.ReadFile("ftps.go")
+	copyData, err := os.ReadFile(localCopy)
 	if err != nil {
-		panic(err)
+		t.Fatalf("read retrieved file: %v", err)
 	}
-	err = ftps.StoreFile("test.go", data)
-	if err != nil {
-		panic(err)
+	if string(copyData) != string(want) {
+		t.Fatalf("retrieved file = %q, want %q", copyData, want)
 	}
 
-	err = ftps.RetrieveFile("test.go", "copy.go")
+	entries, err := client.List()
 	if err != nil {
-		panic(err)
+		t.Fatalf("List: %v", err)
 	}
-
-	err = ftps.DeleteFile("test.go")
-	if err != nil {
-		panic(err)
-	}
-
-	entries, err := ftps.List()
-	if err != nil {
-		panic(err)
-	}
+	found := false
 	for _, entry := range entries {
-		log.Println(entry)
+		if entry.Name == "test.txt" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("List did not contain test.txt: %v", entries)
 	}
 
-	err = ftps.Quit()
-	if err != nil {
-		panic(err)
+	if err := client.DeleteFile("test.txt"); err != nil {
+		t.Fatalf("DeleteFile: %v", err)
+	}
+	if err := client.Quit(); err != nil {
+		t.Fatalf("Quit: %v", err)
 	}
 }

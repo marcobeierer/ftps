@@ -30,7 +30,7 @@ func (ftps *FTPS) Connect(host string, port int) (err error) {
 
 	ftps.host = host
 
-	ftps.conn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", host, port))
+	ftps.conn, err = net.Dial("tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 	if err != nil {
 		return err
 	}
@@ -98,7 +98,7 @@ func (ftps *FTPS) request(cmd string, expected int) (message string, err error) 
 
 	ftps.debugInfo("<*cmd*> " + cmd)
 
-	_, err = ftps.text.Cmd(cmd)
+	_, err = ftps.text.Cmd("%s", cmd)
 	if err != nil {
 		return
 	}
@@ -399,7 +399,7 @@ func (ftps *FTPS) Quit() (err error) {
 
 func (ftps *FTPS) openDataConn(port int) (dataConn net.Conn, err error) {
 
-	dataConn, err = net.Dial("tcp", fmt.Sprintf("%s:%d", ftps.host, port))
+	dataConn, err = net.Dial("tcp", net.JoinHostPort(ftps.host, strconv.Itoa(port)))
 	if err != nil {
 		return
 	}
