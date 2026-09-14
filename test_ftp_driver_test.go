@@ -20,10 +20,16 @@ import (
 type testFTPDriver struct {
 	fs       afero.Fs
 	cert     tls.Certificate
+	username string
+	password string
 	settings *ftpserver.Settings
 }
 
 func newTestFTPServer(t *testing.T) int {
+	return newTestFTPServerWithCredentials(t, "ftptester", "ftptester")
+}
+
+func newTestFTPServerWithCredentials(t *testing.T, username, password string) int {
 	t.Helper()
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -31,8 +37,10 @@ func newTestFTPServer(t *testing.T) int {
 		t.Fatalf("listen for test FTP server: %v", err)
 	}
 	driver := &testFTPDriver{
-		fs:   afero.NewBasePathFs(afero.NewOsFs(), t.TempDir()),
-		cert: newTestCertificate(t),
+		fs:       afero.NewBasePathFs(afero.NewOsFs(), t.TempDir()),
+		cert:     newTestCertificate(t),
+		username: username,
+		password: password,
 		settings: &ftpserver.Settings{
 			Listener:    listener,
 			PublicHost:  "127.0.0.1",
@@ -72,7 +80,7 @@ func (d *testFTPDriver) ClientConnected(ftpserver.ClientContext) (string, error)
 func (d *testFTPDriver) ClientDisconnected(ftpserver.ClientContext) {}
 
 func (d *testFTPDriver) AuthUser(_ ftpserver.ClientContext, user, pass string) (ftpserver.ClientDriver, error) {
-	if user != "ftptester" || pass != "ftptester" {
+	if user != d.username || pass != d.password {
 		return nil, errors.New("invalid test credentials")
 	}
 	return d.fs, nil

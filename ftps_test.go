@@ -299,6 +299,21 @@ func TestLoginRejectsInvalidCredentials(t *testing.T) {
 	}
 }
 
+func TestLoginPreservesPercentInPassword(t *testing.T) {
+	const (
+		username = "percent-tester"
+		password = "a%b"
+	)
+
+	client := &FTPS{TLSConfig: tls.Config{InsecureSkipVerify: true}} //nolint:gosec // test certificate is self-signed
+	if err := client.Connect("127.0.0.1", newTestFTPServerWithCredentials(t, username, password)); err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := client.Login(username, password); err != nil {
+		t.Fatalf("Login with percent in password: %v", err)
+	}
+}
+
 func TestConnectRejectsUntrustedCertificate(t *testing.T) {
 	client := new(FTPS)
 	if err := client.Connect("127.0.0.1", newTestFTPServer(t)); err == nil {
